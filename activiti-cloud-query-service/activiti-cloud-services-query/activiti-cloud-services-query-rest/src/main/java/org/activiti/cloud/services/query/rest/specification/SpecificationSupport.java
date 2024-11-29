@@ -25,6 +25,7 @@ import jakarta.persistence.criteria.SetJoin;
 import jakarta.persistence.metamodel.SingularAttribute;
 import java.util.Collection;
 import java.util.Set;
+import java.util.function.Supplier;
 import org.activiti.cloud.dialect.CustomPostgreSQLDialect;
 import org.activiti.cloud.services.query.model.ProcessVariableEntity;
 import org.activiti.cloud.services.query.model.ProcessVariableEntity_;
@@ -36,6 +37,12 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 
 public abstract class SpecificationSupport<T> implements Specification<T> {
+
+    protected boolean distinct = true;
+
+    public void setDistinct(boolean distinct) {
+        this.distinct = distinct;
+    }
 
     protected void addLikeFilters(
         Collection<Predicate> predicates,
@@ -165,7 +172,7 @@ public abstract class SpecificationSupport<T> implements Specification<T> {
 
     protected void applySorting(
         Root<T> root,
-        SetJoin<T, ProcessVariableEntity> joinedProcessVars,
+        Supplier<SetJoin<T, ProcessVariableEntity>> joinSupplier,
         CloudRuntimeEntitySort sort,
         CriteriaQuery<?> query,
         CriteriaBuilder criteriaBuilder
@@ -174,6 +181,7 @@ public abstract class SpecificationSupport<T> implements Specification<T> {
             validateSort(sort);
             Expression<Object> orderByClause;
             if (sort.isProcessVariable()) {
+                SetJoin<T, ProcessVariableEntity> joinedProcessVars = joinSupplier.get();
                 Expression<?> extractedValue = criteriaBuilder.function(
                     CustomPostgreSQLDialect.getExtractionFunction(sort.type()),
                     Object.class,

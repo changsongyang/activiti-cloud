@@ -17,19 +17,38 @@
 package org.activiti.cloud.services.query.rest;
 
 import com.querydsl.core.types.Predicate;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
+import jakarta.persistence.Tuple;
+import jakarta.persistence.TypedQuery;
+import jakarta.persistence.criteria.CriteriaBuilder;
+import jakarta.persistence.criteria.CriteriaQuery;
+import jakarta.persistence.criteria.Root;
+import jakarta.persistence.criteria.Selection;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 import org.activiti.api.runtime.shared.security.SecurityManager;
 import org.activiti.cloud.alfresco.data.domain.AlfrescoPagedModelAssembler;
 import org.activiti.cloud.api.task.model.QueryCloudTask;
+import org.activiti.cloud.services.query.app.repository.TaskCandidateGroupRepository;
+import org.activiti.cloud.services.query.app.repository.TaskCandidateUserRepository;
 import org.activiti.cloud.services.query.app.repository.TaskRepository;
+import org.activiti.cloud.services.query.model.TaskCandidateGroupEntity;
+import org.activiti.cloud.services.query.model.TaskCandidateUserEntity;
 import org.activiti.cloud.services.query.model.TaskEntity;
 import org.activiti.cloud.services.query.rest.assembler.TaskRepresentationModelAssembler;
 import org.activiti.cloud.services.query.rest.payload.TaskSearchRequest;
 import org.activiti.cloud.services.query.rest.predicate.QueryDslPredicateAggregator;
 import org.activiti.cloud.services.query.rest.predicate.QueryDslPredicateFilter;
+import org.activiti.cloud.services.query.rest.specification.SubqueryWrappingSpecification;
 import org.activiti.cloud.services.query.rest.specification.TaskSpecification;
 import org.activiti.cloud.services.security.TaskLookupRestrictionService;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 import org.springframework.hateoas.EntityModel;
 import org.springframework.hateoas.PagedModel;
@@ -38,6 +57,10 @@ import org.springframework.transaction.annotation.Transactional;
 public class TaskControllerHelper {
 
     private final TaskRepository taskRepository;
+
+    private final TaskCandidateUserRepository taskCandidateUserRepository;
+
+    private final TaskCandidateGroupRepository taskCandidateGroupRepository;
 
     private final ProcessVariableService processVariableService;
 
@@ -51,8 +74,13 @@ public class TaskControllerHelper {
 
     private final SecurityManager securityManager;
 
+    @PersistenceContext
+    private EntityManager entityManager;
+
     public TaskControllerHelper(
         TaskRepository taskRepository,
+        TaskCandidateUserRepository taskCandidateUserRepository,
+        TaskCandidateGroupRepository taskCandidateGroupRepository,
         ProcessVariableService processVariableService,
         AlfrescoPagedModelAssembler<TaskEntity> pagedCollectionModelAssembler,
         QueryDslPredicateAggregator predicateAggregator,
@@ -61,6 +89,8 @@ public class TaskControllerHelper {
         SecurityManager securityManager
     ) {
         this.taskRepository = taskRepository;
+        this.taskCandidateUserRepository = taskCandidateUserRepository;
+        this.taskCandidateGroupRepository = taskCandidateGroupRepository;
         this.processVariableService = processVariableService;
         this.pagedCollectionModelAssembler = pagedCollectionModelAssembler;
         this.predicateAggregator = predicateAggregator;
@@ -121,7 +151,13 @@ public class TaskControllerHelper {
         Pageable pageable,
         TaskSpecification taskSpecification
     ) {
-        Page<TaskEntity> tasks = taskRepository.findAll(taskSpecification, pageable);
+        Page<TaskEntity> tasks = new PageImpl<>(
+            executeTupleQueryAndExtractTasks(getTupleQuery(taskSpecification, pageable)),
+            pageable,
+            taskRepository.count(new SubqueryWrappingSpecification<>(taskSpecification))
+        );
+        fetchTaskCandidateUsers(tasks.getContent());
+        fetchTaskCandidateGroups(tasks.getContent());
         processVariableService.fetchProcessVariablesForTasks(
             tasks.getContent(),
             taskSearchRequest.processVariableKeys()
@@ -210,5 +246,40 @@ public class TaskControllerHelper {
         } else {
             return taskRepository.findAll(extendedPredicate, pageable);
         }
+    }
+
+    private TypedQuery<Tuple> getTupleQuery(TaskSpecification taskSpecification, Pageable pageable) {
+        CriteriaBuilder cb = entityManager.getCriteriaBuilder();
+        CriteriaQuery<Tuple> tupleQuery = cb.createTupleQuery();
+        Root<TaskEntity> root = tupleQuery.from(TaskEntity.class);
+        tupleQuery.where(taskSpecification.toPredicate(root, tupleQuery, cb));
+        List<Selection<?>> selections = new ArrayList<>();
+        selections.add(root);
+        tupleQuery.getOrderList().forEach(order -> selections.add(order.getExpression()));
+        tupleQuery.multiselect(selections.toArray(new Selection[0]));
+        TypedQuery<Tuple> query = entityManager.createQuery(tupleQuery);
+        query.setFirstResult((int) pageable.getOffset());
+        query.setMaxResults(pageable.getPageSize());
+        return query;
+    }
+
+    private List<TaskEntity> executeTupleQueryAndExtractTasks(TypedQuery<Tuple> query) {
+        return query.getResultList().stream().map(t -> t.get(0, TaskEntity.class)).collect(Collectors.toList());
+    }
+
+    private void fetchTaskCandidateUsers(Collection<TaskEntity> tasks) {
+        Map<String, Set<TaskCandidateUserEntity>> candidatesByTaskId = taskCandidateUserRepository
+            .findByTaskIdIn(tasks.stream().map(TaskEntity::getId).collect(Collectors.toSet()))
+            .stream()
+            .collect(Collectors.groupingBy(TaskCandidateUserEntity::getTaskId, Collectors.toSet()));
+        tasks.forEach(task -> task.setTaskCandidateUsers(candidatesByTaskId.get(task.getId())));
+    }
+
+    private void fetchTaskCandidateGroups(Collection<TaskEntity> tasks) {
+        Map<String, Set<TaskCandidateGroupEntity>> candidatesByTaskId = taskCandidateGroupRepository
+            .findByTaskIdIn(tasks.stream().map(TaskEntity::getId).collect(Collectors.toSet()))
+            .stream()
+            .collect(Collectors.groupingBy(TaskCandidateGroupEntity::getTaskId, Collectors.toSet()));
+        tasks.forEach(task -> task.setTaskCandidateGroups(candidatesByTaskId.get(task.getId())));
     }
 }

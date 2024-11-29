@@ -29,14 +29,18 @@ import java.math.BigDecimal;
 import java.util.Date;
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.IntStream;
 import org.activiti.api.task.model.Task;
+import org.activiti.cloud.services.query.model.ProcessInstanceEntity;
 import org.activiti.cloud.services.query.model.ProcessVariableKey;
 import org.activiti.cloud.services.query.model.TaskEntity;
 import org.activiti.cloud.services.query.rest.filter.FilterOperator;
 import org.activiti.cloud.services.query.rest.filter.VariableFilter;
 import org.activiti.cloud.services.query.rest.filter.VariableType;
 import org.activiti.cloud.services.query.rest.payload.CloudRuntimeEntitySort;
+import org.activiti.cloud.services.query.rest.payload.TaskSearchRequest;
 import org.activiti.cloud.services.query.util.QueryTestUtils;
+import org.activiti.cloud.services.query.util.TaskBuilder;
 import org.activiti.cloud.services.query.util.TaskSearchRequestBuilder;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -3938,6 +3942,8 @@ public abstract class AbstractTaskControllerIT {
         for (int i = 0; i < 10; i++) {
             queryTestUtils
                 .buildTask()
+                .withTaskCandidateGroups("group1", "group2")
+                .withTaskCandidateUsers(CURRENT_USER, "other-user")
                 .withAssignee(CURRENT_USER)
                 .withVariables(new QueryTestUtils.VariableInput(VAR_NAME, VariableType.STRING, "value"))
                 .withId(String.valueOf(i))
@@ -3998,5 +4004,69 @@ public abstract class AbstractTaskControllerIT {
             .body("page.totalPages", is(3))
             .body("page.size", is(4))
             .body("page.number", is(2));
+    }
+
+    @Test
+    void should_returnCorrectNumberOfDistinctTasks_whenJoiningTaskAndProcessVariables() {
+        ProcessInstanceEntity processInstance = queryTestUtils
+            .buildProcessInstance()
+            .withTasks(
+                IntStream
+                    .range(0, 10)
+                    .mapToObj(i ->
+                        queryTestUtils
+                            .buildTask()
+                            .withId(String.valueOf(i))
+                            .withAssignee(CURRENT_USER)
+                            .withTaskCandidateUsers(CURRENT_USER, "other-user")
+                            .withTaskCandidateGroups("group1", "group2")
+                            .withVariables(new QueryTestUtils.VariableInput("taskVar", VariableType.STRING, "value"))
+                    )
+                    .toArray(TaskBuilder[]::new)
+            )
+            .withVariables(
+                IntStream
+                    .range(0, 10)
+                    .mapToObj(i -> new QueryTestUtils.VariableInput("var" + i, VariableType.STRING, "value"))
+                    .toArray(QueryTestUtils.VariableInput[]::new)
+            )
+            .buildAndSave();
+
+        TaskSearchRequest request = new TaskSearchRequestBuilder()
+            .withTaskVariableFilters(
+                new VariableFilter(
+                    processInstance.getProcessDefinitionKey(),
+                    "taskVar",
+                    VariableType.STRING,
+                    "value",
+                    FilterOperator.EQUALS
+                )
+            )
+            .withProcessVariableFilters(
+                new VariableFilter(
+                    processInstance.getProcessDefinitionKey(),
+                    "var1",
+                    VariableType.STRING,
+                    "value",
+                    FilterOperator.EQUALS
+                )
+            )
+            .withSort(new CloudRuntimeEntitySort("createdDate", Sort.Direction.DESC, false, null, null))
+            .withStatus(Task.TaskStatus.ASSIGNED)
+            .build();
+
+        given()
+            .contentType(MediaType.APPLICATION_JSON)
+            .body(request)
+            .param("maxItems", 10)
+            .when()
+            .post(getSearchEndpointHttpPost())
+            .then()
+            .statusCode(200)
+            .body(TASKS_JSON_PATH, hasSize(10))
+            .body(
+                TASK_IDS_JSON_PATH,
+                contains(IntStream.range(0, 10).mapToObj(String::valueOf).toList().reversed().toArray())
+            );
     }
 }

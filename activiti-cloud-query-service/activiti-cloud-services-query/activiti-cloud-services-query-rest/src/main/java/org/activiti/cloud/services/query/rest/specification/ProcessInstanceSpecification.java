@@ -59,6 +59,7 @@ public class ProcessInstanceSpecification extends SpecificationSupport<ProcessIn
         CriteriaBuilder criteriaBuilder
     ) {
         predicates = new ArrayList<>();
+        query.distinct(distinct);
         applyUserRestrictionFilter(root, criteriaBuilder);
         applyNameFilter(root, criteriaBuilder);
         applyInitiatorFilter(root);
@@ -72,7 +73,7 @@ public class ProcessInstanceSpecification extends SpecificationSupport<ProcessIn
         if (!query.getResultType().equals(Long.class)) {
             applySorting(
                 root,
-                root.join(ProcessInstanceEntity_.variables, JoinType.LEFT),
+                () -> root.join(ProcessInstanceEntity_.variables, JoinType.LEFT),
                 searchRequest.sort(),
                 query,
                 criteriaBuilder
